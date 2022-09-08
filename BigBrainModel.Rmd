@@ -1,0 +1,415 @@
+---
+title: "BigBrainModel"
+output:
+  word_document: default
+  html_document: default
+date: '2022-08-08'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+library(stringr)
+library(GGally)
+library(leaps)
+library(MASS)
+library(faraway)
+library(lawstat)
+library(Metrics)
+house <- read.csv("kc_house_data.csv")
+```
+
+```{r}
+df <- house %>% 
+  dplyr:: select(-id, -date)
+df2 <- df %>% 
+  mutate(grade.cat = ifelse(grade>7, 1, 0))
+df2$waterfront<-factor(df2$waterfront)
+df2$view<-factor(df2$view)
+df2$condition <-factor(df2$condition)
+df3 <- df2 %>%
+  mutate(latest_construct = ifelse(yr_renovated == 0, yr_built, yr_renovated)) %>%
+  dplyr::select(-yr_renovated, -long, -lat, -grade.cat)
+```
+
+```{r}
+set.seed(101)
+sample <- sample.int(nrow(df3), floor(0.8*nrow(df3)), replace = F)
+train <- df3[sample, ] ## training data frame
+test <- df3[-sample, ] ## testing data frame
+```
+
+To go about figuring out which set of predictors will best predict the price of a house, we plan on taking two modeling approaches: first, constructing a regression out of intuition and second using automatic algorithms (one using all possible regressions and one using the step function). Then, we will compare the models to determine which has the best fit of the data.
+
+We performed exploratory data analysis on the variables in the data set to determine which variables we wanted to include in our first pass model. To examine the quantitative predictors, our first step was to plot each of them against price. Figure 3.1.1 shows the scatter plots. From this figure, we see that many of the predictors appear to have a relationship with price; at first glance, some strong predictors appear to be bathrooms, sqft_living, sqft_living_15, sqft_above, and grade. A lot of these make intuitive sense to include (as well as some of the other predictors), but to avoid potential overfitting, we also wanted to examine the interactivity between the variables.
+```{r}
+s1 <- ggplot(train, aes(x=bedrooms, y=price)) + 
+  geom_point(pch=20) + 
+  geom_smooth(method = "lm", se=FALSE)
+
+s2 <-ggplot(train, aes(x=bathrooms, y=price)) + 
+  geom_point(pch=20) + 
+  geom_smooth(method = "lm", se=FALSE)
+
+s3 <- ggplot(train, aes(x=sqft_living, y=price)) + 
+  geom_point(pch=20) + 
+  geom_smooth(method = "lm", se=FALSE)
+
+s4 <- ggplot(train, aes(x=sqft_lot, y=price)) + 
+  geom_point(pch=20) + 
+  geom_smooth(method = "lm", se=FALSE)
+
+s5 <- ggplot(train, aes(x=sqft_living15, y=price)) + 
+  geom_point(pch=20) + 
+  geom_smooth(method = "lm", se=FALSE)
+
+s6 <- ggplot(train, aes(x=sqft_lot15, y=price)) + 
+  geom_point(pch=20) + 
+  geom_smooth(method = "lm", se=FALSE)
+
+s7 <- ggplot(train, aes(x=sqft_above, y=price)) + 
+  geom_point(pch=20) + 
+  geom_smooth(method = "lm", se=FALSE)
+
+s8 <- ggplot(train, aes(x=sqft_basement, y=price)) + 
+  geom_point(pch=20) + 
+  geom_smooth(method = "lm", se=FALSE)
+
+s9 <- ggplot(train, aes(x=grade, y=price)) + 
+  geom_point(pch=20) + 
+  geom_smooth(method = "lm", se=FALSE)
+
+s10 <- ggplot(train, aes(x=floors, y=price)) + 
+  geom_point(pch=20) + 
+  geom_smooth(method = "lm", se=FALSE)
+
+s11 <- ggplot(train, aes(x=yr_built, y=price)) + 
+  geom_point(pch=20) + 
+  geom_smooth(method = "lm", se=FALSE)
+
+s12 <- ggplot(train, aes(x=latest_construct, y=price)) + 
+  geom_point(pch=20) + 
+  geom_smooth(method = "lm", se=FALSE)
+```
+Figure 3.1.1:
+```{r}
+ggarrange(s1, s2, s3, s4, s9, s11, ncol=3, nrow=2)
+```
+
+```{r}
+ggarrange(s7, s8, s9, s10, s11, s12, ncol=3, nrow=2)
+```
+Figure 3.1.2 shows both the correlation coefficient between the quantitative predictors and a scatter plot for each combination of predictors. Before diving into the numbers, we intuitively knew that many of the variables were proxies for the size of the house (bedrooms, bathrooms, floors, all of the sqft variables), so we expected those predictors to be highly correlated. Additionally, we thought that a house's living and lot sizes would be correlated with the neighborhood living and lot sizes. As predicted, we saw that many, although not all, of the size-related variables had high correlation with each other. Going forward, we will be selective in choosing size-related variables so to not overfit the model. We also saw some relatively unexpected correlations, such as grade with sqft_living and sqft_above.
+
+Figure 3.1.2
+```{r}
+library(GGally)
+
+ggpairs(train[,c(2,3,4,5,6,10,11,12,13,17,15,16)],  upper = list(continuous = wrap("cor", size = 3)), lower = list(continuous = wrap("points", alpha = 0.3, size=0.3))) + theme_grey(base_size = 8) +  theme(axis.text=element_blank(),axis.ticks=element_blank())
+```
+For the categorical variables, we created boxplots to compare the mean and variance of price within the different classes for each variable. Figure 3.1.3 shows the boxplot for the waterfront variable. We expected a strong effect from waterfront, as we hypothesized that location-related variables would be very important in determining price. There seems to be a relatively clear difference between mean price for waterfront and non-waterfront properties, so we will want to include waterfront in our model.
+
+Figure 3.1.3
+```{r}
+ggplot(train, aes(x=waterfront, y=price))+
+geom_boxplot()+
+theme(plot.title = element_text(hjust = 0.5))+
+labs(title="Price of Waterfront vs Non-Waterfront Property")
+```
+Figure 3.1.4 shows the property price plotted against the quality of the view at the property. We also thought view would have an impact on price, because it also is a location-adjacent variable. From the box plot we can see that there is a difference between the five classes, although it doesn't appear to be as clear as waterfront. At the very least, we can see that category 4 seems to have a higher mean than the rest of the categories, demonstrating that view may also be useful in our model.
+
+Figure 3.1.4
+```{r}
+ggplot(train, aes(x=view, y=price))+
+geom_boxplot()+
+theme(plot.title = element_text(hjust = 0.5))+
+labs(title="Price of Property Based on View Quality")
+```
+Figure 3.1.5 plots the property price against the condition variable. There does not appear to be too much of a difference between the buckets of the condition variable. We will leave condition out of our intuitive model.
+
+Figure 3.1.5
+```{r}
+ggplot(train, aes(x=condition, y=price))+
+geom_boxplot()+
+theme(plot.title = element_text(hjust = 0.5))+
+labs(title="Price of Property Based on Condition")
+```
+Figure 3.1.6 is a bar chart that plots the average price of a property in a zip code for each zip code in the data. We can see that there are clear differences in price by zip code, which makes intuitive sense. However, zipcode is a categorical variable with many classes, with no intuitive way to create fewer buckets. Therefore, it will be very complicated to include in the model. Additionally, zipcode likely also has high correlation with other variables in the model. Based on our knowledge, the differences in price for zipcode would likely be partially explained with view, waterfront, and the neighborhood variables. With these reasons in mind, we decided to drop zipcode from our analysis.
+
+Figure 3.1.6
+```{r}
+ggplot(train, aes(x=zipcode, y=mean(price)))+
+geom_bar(stat="identity")+
+theme(plot.title = element_text(hjust = 0.5))+
+labs(title="Price of Property Based on Zip Code")
+```
+In our exploratory data analysis, we noticed that the distributions for two of our predictor variables (sqft_living and sqft_living15) were right skewed. Applying a log transformation on these predictors changed their distribution to be  approximately normal. The results of this EDA are shown in Figure 3.1.7. From this, we hypothesize that our transformed predictors will help fit a more accurate regression and reduce the high number of influential points that we anticipate.
+
+Figure 3.1.7
+```{r}
+p1 <- ggplot(train, aes(x=price)) + 
+  geom_histogram(fill="red") +
+  ggtitle("Histogram of Price") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p2 <- ggplot(train, aes(x=log(price))) + 
+  geom_histogram(fill="green") +
+  ggtitle("Histogram of Log Price") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p3 <- ggplot(train, aes(x=sqft_living)) + 
+  geom_histogram(fill="red") +
+  ggtitle("Histogram of Sq Ft") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p4 <- ggplot(train, aes(x=log(sqft_living))) + 
+  geom_histogram(fill="green") +
+  ggtitle("Histogram of Log Sq Ft") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p5 <- ggplot(train, aes(x=sqft_living15)) + 
+  geom_histogram(fill="red") +
+  ggtitle("Histogram of Sq Ft 15") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p6 <- ggplot(train, aes(x=log(sqft_living15))) + 
+  geom_histogram(fill="green") +
+  ggtitle("Histogram of Log Sq Ft 15") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+ggarrange(p1, p2, p3, p4, p5, p6,  ncol=2, nrow=3)
+```
+
+
+```{r}
+brain.train <- train %>% 
+  dplyr::select(-zipcode) %>% 
+  mutate(log.sqft_living = log(sqft_living)) %>%
+  mutate(log.sqft_living15 = log(sqft_living15))
+
+brain.test <- test %>% 
+  dplyr::select(-zipcode) %>% 
+  mutate(log.sqft_living = log(sqft_living)) %>%
+  mutate(log.sqft_living15 = log(sqft_living15))
+```
+
+We fit our first pass at our MLR model, including the variables of log.sqft_living, grade, view, and waterfront. These were the variables that had the most obvious associations with price from our knowledge and Exploratory Data Analysis.
+
+We ran an F-test on this initial model, with the null hypothesis that all coefficients for predictors would be equal to 0. The alternative hypothesis is that at least one of these coefficients would not be equal to 0. Our F-statistic, shown in Table 3.1.1, that we generated was 3554, with a p-value close to 0. This means that we can reject our null hypothesis and that we have a useful model. With our baseline established, we proceeded to test other variables to see if they would improve our model.
+
+Table 3.1.1
+```{r}
+first.mlr <- lm(price~log.sqft_living+grade+view+waterfront, data=brain.train)
+summary(first.mlr)
+```
+
+First, we tried adding bathrooms, because it appeared to correlate with price. We left it out of our initial model because logically it represents the same concept as sqft_living (size of the house), and they had a fairly high correlation coefficient (0.756). The result was that bathrooms did appear as significant, but the adjusted R-squared of our model only increased by 0.0006. Therefore, following the concept that simpler models are more effective and that conceptually the bathroom variable was redundant, we decided to leave it out of our model.
+
+Table 3.1.2
+```{r}
+second.mlr <- lm(price~log.sqft_living+grade+view+waterfront+bathrooms, data=brain.train)
+summary(second.mlr)
+```
+
+Next we tried adding log.sqft_living15, because that variable also seemed correlated with price during EDA. When we added it, though, we found that it was significant but only improved adjusted R-squared by 0.0004, so we did not include it in the model.
+
+Table 3.1.3
+```{r}
+third.mlr <- lm(price~log.sqft_living+grade+view+waterfront+log.sqft_living15, data=brain.train)
+summary(third.mlr)
+```
+
+Last, we tested yr_built. We tried this because, even though yr_built did not appear to have too strong of a relationship with price during EDA, it logically would make sense to include. We found that yr_built was significant and that it improved our adjusted R-squared by ~0.05, so we included it. We are not concerned with the fact that the coefficient is the opposite sign as expected. MLR coefficients measure the effect of a predictor after accounting for all the other predictors in the model, so given levels of all the other predictors, it is reasonable to assume there is a real estate-related reason for the age effect described by our model.
+
+Table 3.1.4
+```{r}
+fourth.mlr <- lm(price~log.sqft_living+grade+view+waterfront+yr_built, data=brain.train)
+summary(fourth.mlr)
+```
+
+After we tested the other variables that could make sense to include in the model, the last step was to check for interaction terms. Intuitively, we thought that there could be interaction effects between sqft_living and waterfront as well as sqft_living and view. However, we thought that these interaction effects would be similar because the best views were likely waterfront properties. We elected to test waterfall first, as we thought this showed the relationship more clearly. Figure 3.1.7 shows the clear interaction effect. We did find this interaction term significant, as shown in Table 3.1.5, so we included it in our model.
+
+Table 3.1.5
+```{r}
+intuitive <- lm(price~log.sqft_living*waterfront+view+grade+yr_built, data=brain.train)
+summary(intuitive)
+```
+
+Figure 3.1.8
+```{r}
+ggplot(brain.train, aes(x=log.sqft_living,y=price,color=waterfront))+
+  geom_point()+
+  geom_smooth(method = "lm", se=FALSE)+
+  theme(plot.title = element_text(hjust = 0.5))+
+  labs(x="Log (Living Space) (sqft)", y="Price (USD)", title="Interaction Effect Between Waterfront and Sqft_Living")
+```
+
+We created a residual plot (Figure 3.1.8) to test the first two linear regression assumptions. Assumption 1 states that for every level of the predictor, the residuals have a mean variance of zero. Assumption 2 states that for every level of the predictor, the residuals have a constant variance. Both assumptions are violated in the residual plot, Assumption 2 more obviously so than Assumption 1. Therefore, we will need to transform our y-variable first and reassess.
+
+Figure 3.1.9
+```{r}
+yhat<-intuitive$fitted.values
+res<-intuitive$residuals
+assumptions <- data.frame(yhat,res)
+
+ggplot(assumptions, aes(x=yhat,y=res))+
+  geom_point()+
+  geom_hline(yintercept=0, color="red")+
+  theme(plot.title = element_text(hjust = 0.5))+
+  labs(x="Fitted y", y="Residuals", title="Residual Plot")
+```
+
+To determine how to transform our y-variable, we created a Box-Cox plot, shown in Figure 3.1.9. This showed a very small confidence interval for lambda in between 0 and 0.05. For simplicity and due to proximity to this value, we decided to first try transforming the y-variable price by taking log(price).
+
+Figure 3.1.10
+```{r}
+boxcox(intuitive, lambda = seq(-0.1, 0.2, 1/10))
+```
+After transforming price, we wanted to recheck our regression. In Table 3.1.6, we see that the interaction term is still significant in predicting log(price), but with a p-value of 0.04. Figure 3.1.10 shows how the difference in the slopes between the two waterfront classes eroded with the y-transformation. Coupled with the extremely high VIF numbers seen in table 3.1.7, we decided to drop the interaction term from the model. Table 3.1.6 shows that we have the exact same adjusted R-squared with and without the interaction term.
+
+Table 3.1.6
+```{r}
+price.star <- log(brain.train$price)
+brain.train<-data.frame(brain.train,price.star)
+
+price.star.test <- log(brain.test$price)
+brain.test <- data.frame(brain.test, price.star.test)
+
+intuitive.transformed<-lm(price.star~log.sqft_living*waterfront+view+grade+yr_built, data=brain.train)
+summary(intuitive.transformed)
+
+intuitive.final<-lm(price.star~log.sqft_living+waterfront+view+grade+yr_built, data=brain.train)
+summary(intuitive.final)
+```
+
+Table 3.1.7
+```{r}
+vif(intuitive.transformed)
+```
+
+Figure 3.1.11
+```{r}
+ggplot(brain.train, aes(x=log.sqft_living,y=price.star,color=waterfront))+
+  geom_point()+
+  geom_smooth(method = "lm", se=FALSE)+
+  theme(plot.title = element_text(hjust = 0.5))+
+  labs(x="Living Space (sqft)", y="Log (Price)", title="Interaction Effect Between Waterfront and Sqft_Living")
+```
+
+
+Now that we transformed price, we are ready to check our regression assumptions again. We started out with Levene's test for equal variance, as we had categorical predictors. Table 3.9 shows the result for view and waterfront on the transformed price variable. As shown, we have a significant p-value for both, meaning that the variability of the response variable is different for each class of the categorical variable. This means the tests failed.
+
+Table 3.1.8
+```{r}
+levene.test(brain.train$price.star,brain.train$view)
+levene.test(brain.train$price.star,brain.train$waterfront)
+```
+
+Because of the failed Levene's tests, we examined the sample sizes of each class for our categorical variables. The sample sizes were not relatively equal. Then, we examined the variances. For view, the smallest and largest variances of the classes were within 1.5x of each other. For waterfront, the smallest and largest variances of the classes were within 1.85x of each other. While ideally we would create a regression for each waterfront category, the waterfront variances are not too extremely different, so due to this consideration and project constraints, we cautiously proceeded with one regression.
+
+Table 3.1.9
+```{r}
+v0 <- var(brain.train$price.star[brain.train$view==0])
+v1 <- var(brain.train$price.star[brain.train$view==1])
+v2 <- var(brain.train$price.star[brain.train$view==2])
+v3 <- var(brain.train$price.star[brain.train$view==3])
+v4 <- var(brain.train$price.star[brain.train$view==4])
+
+vvariances <- c(v0,v1,v2,v3,v4)
+min(vvariances) * 1.5 >  max(vvariances)
+
+
+w0 <- var(brain.train$price.star[brain.train$waterfront==0])
+w1 <- var(brain.train$price.star[brain.train$waterfront==1])
+
+wvariances <- c(w0,w1)
+min(wvariances) * 1.85 >  max(wvariances)
+```
+
+With our regression finalized, we went to recheck our regression assumptions, starting with creating another residual plot. This time, Assumptions 1 and 2, as described above, appear to be met well. We are comfortable moving on to Assumption 3.
+
+Figure 3.1.12
+```{r}
+yhat2<-intuitive.final$fitted.values
+res2<-intuitive.final$residuals
+
+assumptions<-data.frame(assumptions,yhat2,res2)
+
+ggplot(assumptions, aes(x=yhat2,y=res2))+
+  geom_point()+
+  geom_hline(yintercept=0, color="red")+
+  theme(plot.title = element_text(hjust = 0.5))+
+  labs(x="Fitted y", y="Residuals", title="Residual Plot")
+```
+
+Assumption 3 of linear regression states that there cannot be any autocorrelation of the residuals. To test this, we plotted the resdiuals on an ACF plot (Figure 3.1.13). Because all of the lines on the plot were within the confidence bound, we say that there is no autocorrelation of the residuals and that the Assumption 3 is met.
+
+Figure 3.1.13
+```{r}
+acf(res2, main="ACF Plot of Residuals")
+```
+The final assumption of linear regression states that for each value of the predictor, the error terms follow a normal distribution. Figure 3.1.14 depicts a Normal Q-Q plot that we used to test this assumption. All of the residuals fall very close to the line representing a normal distribution, so Assumption 4 is also met.
+
+Figure 3.1.14
+```{r}
+qqnorm(res2)
+qqline(res2, col="red")
+```
+
+Before we moved on to testing for influential data points, we wanted to assess our model fit further. To do this, we compared our calculated R-squared prediction value to the R-squared of the model. These values are shown in table 3.1.10, where our R-squared prediction value was 0.6315 and R-squared was 0.6318. These values are very close to one another, so we are confident that we do not have overfitting in our model.
+
+Table 3.1.10 
+```{r}
+press <- function(regression) {
+    sum((regression$residuals / (1 - lm.influence(regression)$hat)) ^2)
+}
+
+press_reduced <- press(intuitive.transformed)
+
+sst = sum(anova(intuitive.transformed)$`Sum Sq`)
+r2p <- 1-(press_reduced/sst)
+print(paste("R-squared prediction: ", round(r2p, 4)))
+
+ssr = sum(anova(intuitive.transformed)$`Sum Sq`[1:5])
+r2 = ssr/sst
+print(paste("R-squared: ", round(r2, 4)))
+```
+
+The first step in checking for influential points is checking for outliers. To do this, we produced a list of externally studentized residuals and compared them to a t(n-1-p) distribution. If any residuals were greater than the critical value, then those points would be considered outliers. However, we did not find any, so we proceed.
+
+Table 3.1.11
+```{r}
+ext.student.res<-rstudent(intuitive.final)
+
+n<-dim(train)[1]
+p<-6
+crit<-qt(1-0.05/(2*n), n-p-1)
+ext.student.res[abs(ext.student.res)>crit]
+```
+
+Next, we calculated highly leveraged points, which are particularly influential points in the regression because they are far from the mean of the predictors. We found 1,935 high leverage points for this model, but before we are concerned, we need to check if they are actually influential.
+
+```{r}
+lev<-lm.influence(intuitive.final)$hat
+length(lev[lev>2*p/n])
+```
+
+There are two methodologies to test for influential points - Cook's Distance and DFFITS. Because Cook's Distance is the measure that is better for general models with goals of broadly fitting data well and DFFITS is best for assessing models that will be used to predict a specific point with specific parameters, we chose to use Cook's Distance for our test. Using Cook's Distance, none of our data points were deemed influential, so we did not need to address any influential observations.
+
+```{r}
+COOKS<-cooks.distance(intuitive.final)
+COOKS[COOKS>qf(0.5,p,n-p)]
+```
+
+Finally, to determine the quality of our final intuitive model, we fit our regression onto our test data and calculated the root mean square error of the model. The final intuitive model had an RMSE of 0.3161. We will compare this with the model we develop using the automatic algorithms to determine which is better.
+
+```{r}
+y_predicted <- predict(intuitive.final, brain.test)
+y_actual <- brain.test$price.star.test
+rmse(y_actual,y_predicted)
+```
+

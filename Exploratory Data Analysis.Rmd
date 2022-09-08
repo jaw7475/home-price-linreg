@@ -1,0 +1,244 @@
+```{r}
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+library(stringr)
+library(faraway)
+library(ROCR)
+house <- read.csv("kc_house_data.csv")
+```
+
+explore date
+```{r}
+dates <- substr(house$date,1,8)
+dates <- str_replace(dates,"(\\d{4})(\\d{2})(\\d{2})$","\\1/\\2/\\3")
+new_dates <- as.Date(dates, "%Y/%m/%d")
+```
+
+
+make new df
+```{r}
+df <- house %>% 
+  dplyr:: select(-id, -date) %>% 
+  mutate(sale_date = new_dates)
+```
+
+```{r}
+df1 <- df %>% 
+  dplyr:: select(-sale_date)
+```
+
+## Check grade Distribution
+```{r}
+p <- ggplot(df1, aes(x=grade)) + 
+  geom_histogram()
+
+p+geom_vline(data=df1, aes(xintercept=mean(df1$grade), color="red"),
+             linetype="dashed") +
+  geom_vline(data=df1, aes(xintercept=median(df1$grade), color="blue"),
+             linetype="solid")
+```
+
+Since the mean & median are pretty similar around 7, we will choose to convert grade to a categorical binary variable, where 1 corresponds to a grade greater than 7, and 0 is less than or equal to 7
+this will make it easier to include in our MLR and LOGR
+
+```{r}
+df2 <- df1 %>% 
+  mutate(grade.cat = ifelse(grade>7, 1, 0))
+```
+
+## Factoring the grade Categories
+```{r}
+df2$grade.cat<-factor(df2$grade.cat)
+levels(df2$grade.cat) <- c("Average or Below","Above Average")
+```
+
+## Splitting the data into training and test sets
+```{r}
+set.seed(101) ##for reproducibility to get the same split
+sample<-sample.int(nrow(df2), floor(.80*nrow(df2)), replace = F)
+train<-df2[sample, ] ##training data frame
+test<-df2[-sample, ] ##test data frame
+```
+
+##Tables exploring the grade variable
+```{r}
+table(train$grade.cat)
+
+##table with proportions
+prop.table(table(train$grade.cat))
+```
+
+## Bar Plot of Floor with grade
+```{r}
+ggplot(train, aes(x=floors, fill=grade.cat))+
+geom_bar(position = "fill")+
+labs(x="Number of Floors", y="Proportions",
+title="Grade of Construction and Design Category by Number of Floors")
+```
+
+## Scatter plot of sqft lot and sqft living by grade
+```{r}
+ggplot(train, aes(y =sqft_lot, x = sqft_living, color = grade.cat)) +
+  geom_point(alpha = 1) +
+  ylim(0,100000) +
+  labs(x= "Square Footage of Living Space", y= 'Square Footage of Lot Space',
+       title = 'Lot vs Living Space Square Footage' ) +
+  scale_color_discrete(name='Grade',
+                         labels=c("Average or Below", "Above Average"))
+```
+
+## Side by side boxplots of square feet living space by grade
+```{r}
+ggplot(train, aes(x=grade.cat, y=sqft_living ))+
+geom_boxplot()+
+labs(title="Square Feet of Living Space by Grade of Construction and Design")
+
+```
+
+## Side by side boxplots of square feet lot space by grade
+```{r}
+
+ggplot(train, aes(x=grade.cat, y=sqft_lot ))+
+geom_boxplot()+
+labs(title="Square Feet of Lot Space by Grade of Construction and Design") +
+  ylim(0,50000)
+
+```
+Zooming in on lot space boxplot shows the distributions for lot space to be pretty similar.
+
+## Bar plot of bathrooms by grade
+
+```{r}
+ggplot(train, aes(x = bathrooms, fill= grade.cat)) +
+  geom_bar() +
+  xlim(0,7)
+```
+
+## Bar plot of Bedrooms by grade
+
+```{r}
+ggplot(train, aes(x = bedrooms, fill= grade.cat)) +
+  geom_bar() +
+  xlim(0,10)
+```
+
+## Facet Scatter Plot of Sqft_living and bedrooms by view seperated by grade
+```{r}
+ggplot(train) +
+  geom_point(aes(bedrooms, sqft_living, color = grade.cat)) +
+  labs(x = 'bedrooms', y = 'sqft_living') +
+  scale_color_discrete(name = "grade") +
+  xlim(0,10) +
+  facet_wrap(~view) +
+  theme(
+    legend.title = element_text(),
+  )
+```
+
+## Facet Scatter Plot of Sqft_living and floors by condition seperated by grade
+
+```{r}
+ggplot(train) +
+  geom_point(aes(floors, sqft_living, color = grade.cat)) +
+  labs(x = 'floors', y = 'sqft_living') +
+  scale_color_discrete(name = "grade") +
+  xlim(0,4) +
+  facet_wrap(~condition) +
+  theme(
+    legend.title = element_text(),
+  )
+```
+
+
+## Full Regression model with all predictors
+```{r}
+result<-glm(grade.cat ~ bedrooms+bathrooms+sqft_living+sqft_lot+floors
++sqft_above, family = "binomial", data=train)
+summary(result)
+```
+
+
+Is the model useful?  
+$H_0$: $\beta_1$ = $\beta_2$ = $\beta_3$ = $\beta_4$ = $\beta_5$ = $\beta_6$ = 0  
+$H_a$: At least one coefficient in $H_0$ $\neq$ 0
+
+```{r}
+TS<-result$null.deviance-result$deviance
+TS
+##pvalue
+1-pchisq(TS,7)
+
+```
+
+So we reject the null hypothesis. The 6-predictor model is chosen over the intercept-only model; the 6-predictor model is useful.
+
+
+## Step regession to see if it supports use of full model
+```{r}
+##model with all predictors
+regfull <- glm(grade.cat~bedrooms+bathrooms+sqft_living+sqft_lot+ floors , family = "binomial", data=train)
+##intercept only model
+regnull <- glm(grade.cat~1, family = "binomial", data=train)
+
+
+step(regnull, scope=list(lower=regnull, upper=regfull), direction="both")
+```
+
+
+## ROC Plot
+```{r}
+##predicted grade for test data based on training data
+preds<-predict(result,newdata=test, type="response")
+
+##transform the input data into a format that is suited for the
+##performance() function
+rates<-prediction(preds, test$grade.cat,label.ordering=c("Average or Below","Above Average"))
+
+##store the true positive and false positive rates
+roc_result<-performance(rates,measure="tpr", x.measure="fpr")
+
+
+##plot ROC curve and overlay the diagonal line for random guessing
+plot(roc_result, main="ROC Curve for Grade")
+lines(x = c(0,1), y = c(0,1), col="red")
+
+
+```
+
+## AUC Value
+
+```{r}
+auc<-performance(rates, measure = "auc")
+auc@y.values
+```
+
+## Confusion Matrix
+
+```{r}
+table(test$grade.cat, preds>0.5)
+```
+
+## Statistics Calculated from Confusion Matrix
+
+```{r}
+## Error Rate
+ER <- (384 +  442)/(1847+384 +  442+1650)
+ER
+## Accuracy
+ACC <- 1 - ER
+ACC
+## False Positive Rate
+FPR <- 384/(1847+384)
+FPR
+## False Negative Rate
+FNR <- 442/(442+1650)
+FNR
+# Sensitivity
+SN <- 1 - FNR
+SN
+# Specificity
+SP <- 1 - FPR
+SP
+```
