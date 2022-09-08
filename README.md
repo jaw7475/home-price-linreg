@@ -5,6 +5,6 @@ Authors: Jake Weinberg, Levi Davis, Gargee Jagtap, Jessica Kimbrell
 
 ## Contents
 
-Home Price Regression Report -> Consolidated report of findings
-BigBrainModel.Rmd -> Linear regression of home price on explanatory predictors
+Home Price Regression Report -> Consolidated report of findings <br/>
+BigBrainModel.Rmd -> Linear regression of home price on explanatory predictors <br/>
 ExploratoryDataAnalysis.Rmd -> Exploratory Data Analysis of the King County Housing Data Set
